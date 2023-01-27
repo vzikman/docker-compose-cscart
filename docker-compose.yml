@@ -1,0 +1,109 @@
+version: "3.9"
+services:
+
+  certissuer:
+    image: certissuer
+    build:
+      context: ./certs
+    volumes:
+    - certs:/tmp/certs
+    environment:
+      CSCART_DOMAIN: ${CSCART_DOMAIN}
+      CSCART_ADDITIONAL_DOMAINS: ${CSCART_ADDITIONAL_DOMAINS}
+    networks:
+    - cscart
+
+  database:
+    image: mariadb:10.6
+    environment:
+      MARIADB_DATABASE: ${CSCART_DB_NAME}
+      MARIADB_ROOT_PASSWORD: ${CSCART_DB_PASSWORD}
+      MARIADB_ROOT_HOST: '%'
+    volumes:
+    - ./app/db:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${CSCART_DB_PASSWORD}"]
+      interval: 1m
+      timeout: 30s
+      retries: 10
+    networks:
+    - cscart
+
+  nginx:
+    image: nginx:alpine
+    working_dir: /etc/nginx
+    volumes:
+    - ./app/files:/app
+    - ./app/xhprof:/xhprof
+    - ./config/nginx:/etc/nginx/conf.d
+    - certs:/etc/nginx/ssl
+    ports:
+    - "80:80"
+    - "443:443"
+    depends_on:
+      certissuer:
+        condition: service_completed_successfully
+    restart: always
+    networks:
+      cscart:
+        aliases:
+        - ${CSCART_DOMAIN}
+
+  php-fpm:
+    build:
+      context: ./config/php${PHP_VER}
+      dockerfile: Dockerfile
+    working_dir: /app
+    volumes:
+    - ./app/files:/app
+    - ./app/xhprof:/xhprof
+    - ./config/php${PHP_VER}/php.ini:/usr/local/etc/php/conf.d/00-php.ini
+    - certs:/etc/ssl/certs/local
+    networks:
+    - cscart
+    depends_on:
+      certissuer:
+        condition: service_completed_successfully
+
+  adminer:
+    image: adminer:fastcgi
+    environment:
+      ADMINER_DEFAULT_SERVER: database
+    networks:
+    - cscart
+
+  mail:
+    image: jcalonso/mailhog
+    tty: true
+    ports:
+      - '8025:8025'
+    networks:
+    - cscart
+
+  exposer-config:
+    image: beyondcodegmbh/expose-server:2.3.0
+    volumes:
+    - exposer:/root/.expose
+    command: ['token', '${EXPOSE_TOKEN}']
+    networks:
+    - cscart
+    profiles: ["exposing"]
+
+  exposer:
+    image: beyondcodegmbh/expose-server:2.3.0
+    volumes:
+    - exposer:/root/.expose
+    depends_on:
+      exposer-config:
+        condition: service_completed_successfully
+    command: ['share', '--server-host=expose.simtechdev.net', '--subdomain=${EXPOSE_SUBDOMAIN}', '--dns=127.0.0.11', 'http://${CSCART_DOMAIN}:80']
+    networks:
+    - cscart
+    profiles: ["exposing"]
+
+networks:
+  cscart:
+
+volumes:
+  certs:
+  exposer:
